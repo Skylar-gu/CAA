@@ -17,6 +17,13 @@ from tqdm import tqdm
 
 DATASET_FILE = os.path.join("preprocessed_data", "generate_dataset.json")
 
+SYCOPHANCY = "Sycophancy"
+
+HUMAN_NAMES = {
+    "sycophancy": "Sycophancy"
+}
+ALL_BEHAVIORS = [SYCOPHANCY]
+
 set_plotting_settings()
 
 def save_activation_projection_pca(behavior: str, layer: int, model_name_path: str):
@@ -129,9 +136,8 @@ if __name__ == "__main__":
         required=True,
     )
     parser.add_argument("--use_base_model", action="store_true", default=False)
-    parser.add_argument("--model_size", type=str, choices=["7b", "13b"], default="7b")
     args = parser.parse_args()
-    model_name_path = get_model_path(args.model_size, args.use_base_model)
+    model_name_path = get_model_path(args.use_base_model)
     args = parser.parse_args()
     for behavior in args.behaviors:
         print(f"plotting {behavior} activations PCA")

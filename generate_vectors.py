@@ -2,7 +2,7 @@
 Generates steering vectors for each layer of the model by averaging the activations of all the positive and negative examples.
 
 Example usage:
-python generate_vectors.py --layers $(seq 0 31) --save_activations --use_base_model --model_size 7b --behaviors sycophancy
+python generate_vectors.py --layers $(seq 0 31) --save_activations --use_base_model --behaviors sycophancy
 """
 
 import json
@@ -29,19 +29,49 @@ load_dotenv()
 
 HUGGINGFACE_TOKEN = os.getenv("HF_TOKEN")
 
+def debug_token_positions(tokenizer, tokens, model_name="debug"):
+    """
+    Debug function to see what tokens are at different positions
+    This helps you understand which position to extract activations from
+    """
+    print(f"\n=== Debug Token Positions for {model_name} ===")
+    
+    if len(tokens.shape) > 1:
+        tokens = tokens[0]  # Remove batch dimension if present
+    
+    tokens_list = tokens.tolist()
+    print(f"Total tokens: {len(tokens_list)}")
+    print(f"Last 5 tokens: {tokens_list[-5:]}")
+    
+    # Decode tokens individually
+    for i, token_id in enumerate(tokens_list[-5:], start=len(tokens_list)-5):
+        try:
+            token_text = tokenizer.decode([token_id])
+            print(f"Position {i} (from end: {i - len(tokens_list)}): {token_id} -> '{token_text}'")
+        except:
+            print(f"Position {i} (from end: {i - len(tokens_list)}): {token_id} -> <DECODE_ERROR>")
+    
+    # Full sequence for context
+    try:
+        full_text = tokenizer.decode(tokens_list)
+        print(f"\nFull sequence:\n'{full_text}'")
+    except:
+        print("\nCouldn't decode full sequence")
+    
+    print("="*50)
 
 class ComparisonDataset(Dataset):
-    def __init__(self, data_path, token, model_name_path, use_chat):
+    def __init__(self, data_path, token, model_name_path, use_instruct):
         with open(data_path, "r") as f:
             self.data = json.load(f)
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name_path, token=token
         )
         self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.use_chat = use_chat
+        self.use_instruct = use_instruct
 
     def prompt_to_tokens(self, instruction, model_output):
-        if self.use_chat:
+        if self.use_instruct:
             tokens = tokenize_llama_chat(
                 self.tokenizer,
                 user_input=instruction,
@@ -89,23 +119,36 @@ def generate_save_vectors_for_behavior(
         data_path,
         HUGGINGFACE_TOKEN,
         model.model_name_path,
-        model.use_chat,
+        model.use_instruct,
     )
-
     for p_tokens, n_tokens in tqdm(dataset, desc="Processing prompts"):
         p_tokens = p_tokens.to(model.device)
         n_tokens = n_tokens.to(model.device)
+
+        # debug_token_positions(dataset.tokenizer, p_tokens, "positive")
+        
         model.reset_all()
         model.get_logits(p_tokens)
         for layer in layers:
             p_activations = model.get_last_activations(layer)
-            p_activations = p_activations[0, -2, :].detach().cpu()
+            if p_activations.dim() == 3:
+                p_activations = p_activations[0, -2, :].detach().cpu()
+            elif p_activations.dim() == 2:
+                p_activations = p_activations[-2, :].detach().cpu()
+            else:
+                raise ValueError(f"Unexpected activation tensor shape: {p_activations.shape}")
             pos_activations[layer].append(p_activations)
+        
         model.reset_all()
         model.get_logits(n_tokens)
         for layer in layers:
             n_activations = model.get_last_activations(layer)
-            n_activations = n_activations[0, -2, :].detach().cpu()
+            if n_activations.dim() == 3:
+                n_activations = n_activations[0, -2, :].detach().cpu()
+            elif n_activations.dim() == 2:
+                n_activations = n_activations[-2, :].detach().cpu()
+            else:
+                raise ValueError(f"Unexpected activation tensor shape: {n_activations.shape}")
             neg_activations[layer].append(n_activations)
 
     for layer in layers:
@@ -125,23 +168,24 @@ def generate_save_vectors_for_behavior(
                 all_neg_layer,
                 get_activations_path(behavior, layer, model.model_name_path, "neg"),
             )
+        
+        print(f"Saved vector for layer {layer}, shape: {vec.shape}")
+
 
 def generate_save_vectors(
     layers: List[int],
     save_activations: bool,
     use_base_model: bool,
-    model_size: str,
     behaviors: List[str],
 ):
     """
     layers: list of layers to generate vectors for
     save_activations: if True, save the activations for each layer
-    use_base_model: Whether to use the base model instead of the chat model
-    model_size: size of the model to use, either "7b" or "13b"
+    use_base_model: Whether to use the base model instead of the chat model 
     behaviors: behaviors to generate vectors for
     """
     model = LlamaWrapper(
-        HUGGINGFACE_TOKEN, size=model_size, use_chat=not use_base_model
+        HUGGINGFACE_TOKEN, use_instruct=not use_base_model
     )
     for behavior in behaviors:
         generate_save_vectors_for_behavior(
@@ -154,7 +198,6 @@ if __name__ == "__main__":
     parser.add_argument("--layers", nargs="+", type=int, default=list(range(32)))
     parser.add_argument("--save_activations", action="store_true", default=False)
     parser.add_argument("--use_base_model", action="store_true", default=False)
-    parser.add_argument("--model_size", type=str, choices=["7b", "13b"], default="7b")
     parser.add_argument("--behaviors", nargs="+", type=str, default=ALL_BEHAVIORS)
 
     args = parser.parse_args()
@@ -162,6 +205,5 @@ if __name__ == "__main__":
         args.layers,
         args.save_activations,
         args.use_base_model,
-        args.model_size,
         args.behaviors
     )

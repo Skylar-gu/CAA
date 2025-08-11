@@ -166,7 +166,8 @@ def get_mmlu_data():
 
 
 def get_steering_vector(behavior, layer, model_name_path, normalized=False):
-    return t.load(get_vector_path(behavior, layer, model_name_path, normalized=normalized))
+    vector = t.load(get_vector_path(behavior, layer, model_name_path, normalized=normalized))
+    return vector.half()
 
 
 def get_finetuned_model_path(

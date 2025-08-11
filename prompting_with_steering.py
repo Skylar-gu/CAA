@@ -13,7 +13,6 @@ import argparse
 from typing import List, Dict, Optional
 from tqdm import tqdm
 from utils.helpers import get_a_b_probs
-from utils.tokenize import E_INST
 from steering_settings import SteeringSettings
 from behaviors import (
     get_open_ended_test_data,
@@ -56,16 +55,16 @@ def process_item_open_ended(
     item: Dict[str, str],
     model: LlamaWrapper,
     system_prompt: Optional[str],
-    a_token_id: int,
-    b_token_id: int,
 ) -> Dict[str, str]:
     question = item["question"]
     model_output = model.generate_text(
         user_input=question, system_prompt=system_prompt, max_new_tokens=100
     )
+    LLAMA31_ASSISTANT_HEADER = "<|start_header_id|>assistant<|end_header_id|>\n\n"
+
     return {
         "question": question,
-        "model_output": model_output.split(E_INST)[-1].strip(),
+        "model_output": model_output.split(LLAMA31_ASSISTANT_HEADER)[-1].strip(),
         "raw_model_output": model_output,
     }
 
@@ -120,9 +119,7 @@ def test_steering(
     }
     model = LlamaWrapper(
         HUGGINGFACE_TOKEN,
-        size=settings.model_size,
-        use_chat=not settings.use_base_model,
-        override_model_weights_path=settings.override_model_weights_path,
+        use_instruct=not settings.use_base_model,
     )
     a_token_id = model.tokenizer.convert_tokens_to_ids("A")
     b_token_id = model.tokenizer.convert_tokens_to_ids("B")
@@ -136,8 +133,6 @@ def test_steering(
             vector = get_steering_vector(settings.behavior, settings.override_vector, name_path, normalized=True)
         else:
             vector = get_steering_vector(settings.behavior, layer, name_path, normalized=True)
-        if settings.model_size != "7b":
-            vector = vector.half()
         vector = vector.to(model.device)
         for multiplier in multipliers:
             result_save_suffix = settings.make_result_save_suffix(
@@ -190,8 +185,7 @@ if __name__ == "__main__":
     parser.add_argument("--system_prompt", type=str, default=None, choices=["pos", "neg"], required=False)
     parser.add_argument("--override_vector", type=int, default=None)
     parser.add_argument("--override_vector_model", type=str, default=None)
-    parser.add_argument("--use_base_model", action="store_true", default=False)
-    parser.add_argument("--model_size", type=str, choices=["7b", "13b"], default="7b")
+    parser.add_argument("--use_base_model", action="store_true", default=False) 
     parser.add_argument("--override_model_weights_path", type=str, default=None)
     parser.add_argument("--overwrite", action="store_true", default=False)
     
@@ -200,10 +194,9 @@ if __name__ == "__main__":
     steering_settings = SteeringSettings()
     steering_settings.type = args.type
     steering_settings.system_prompt = args.system_prompt
-    steering_settings.override_vector = args.override_vector
-    steering_settings.override_vector_model = args.override_vector_model
+    steering_settings.override_vector = args.override_vector # to use steering vector from a specific layer
+    steering_settings.override_vector_model = args.override_vector_model # to use steering vector from a specific layer (dif from model you're testing on)
     steering_settings.use_base_model = args.use_base_model
-    steering_settings.model_size = args.model_size
     steering_settings.override_model_weights_path = args.override_model_weights_path
 
     for behavior in args.behaviors:

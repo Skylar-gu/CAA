@@ -1,4 +1,5 @@
 import torch as t
+import transformers
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from matplotlib import pyplot as plt
 from matplotlib.ticker import ScalarFormatter
@@ -58,10 +59,17 @@ class BlockOutputWrapper(t.nn.Module):
         self.dot_products = []
 
     def forward(self, *args, **kwargs):
-        output = self.block(*args, **kwargs)
+        output = self.block(*args, **kwargs) # <class 'torch.Tensor'> torch.Size([1, 221, 4096])
         self.activations = output[0]
         if self.calc_dot_product_with is not None:
-            last_token_activations = self.activations[0, -1, :]
+        # Handle both 2D and 3D activations
+            if self.activations.dim() == 3:
+                last_token_activations = self.activations[0, -1, :]  # [batch, seq, hidden]
+            elif self.activations.dim() == 2:
+                last_token_activations = self.activations[-1, :]     # [seq, hidden]
+            else:
+                raise ValueError(f"Unexpected activations shape: {self.activations.shape}")
+                
             decoded_activations = self.unembed_matrix(self.norm(last_token_activations))
             top_token_id = t.topk(decoded_activations, 1)[1][0]
             top_token = self.tokenizer.decode(top_token_id)
@@ -69,18 +77,23 @@ class BlockOutputWrapper(t.nn.Module):
                 t.norm(last_token_activations) * t.norm(self.calc_dot_product_with)
             )
             self.dot_products.append((top_token, dot_product.cpu().item()))
-        if self.add_activations is not None:
+            
+        if self.add_activations is not None: 
+            
             augmented_output = add_vector_from_position(
-                matrix=output[0],
+                matrix=output[0],  # [batch, seq, hidden]: torch.Size([221, 4096]
                 vector=self.add_activations,
                 position_ids=kwargs["position_ids"],
                 from_pos=self.from_position,
             )
-            output = (augmented_output,) + output[1:]
+
+            if isinstance(output, tuple):
+                output = (augmented_output,) + output[1:]
+            else:
+                output = augmented_output
 
         if not self.save_internal_decodings:
             return output
-
         # Whole block unembedded
         self.block_output_unembedded = self.unembed_matrix(self.norm(output[0]))
 
@@ -114,32 +127,32 @@ class LlamaWrapper:
     def __init__(
         self,
         hf_token: str,
-        size: str = "7b",
-        use_chat: bool = True,
-        override_model_weights_path: Optional[str] = None,
+        use_instruct: bool = True,
     ):
         self.device = "cuda" if t.cuda.is_available() else "cpu"
-        self.use_chat = use_chat
-        self.model_name_path = get_model_path(size, not use_chat)
+        self.use_instruct = use_instruct   
+        self.model_name_path = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+        
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_name_path, token=hf_token
         )
+        
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_name_path, token=hf_token
+            self.model_name_path,
+            token=hf_token,
+            torch_dtype=t.float16,  ###### Add explicit dtype for memory efficiency
+            low_cpu_mem_usage=True,
+            device_map="auto",
         )
-        if override_model_weights_path is not None:
-            self.model.load_state_dict(t.load(override_model_weights_path))
-        if size != "7b":
-            self.model = self.model.half()
-        self.model = self.model.to(self.device)
-        if use_chat:
-            self.END_STR = t.tensor(self.tokenizer.encode(ADD_FROM_POS_CHAT)[1:]).to(
-                self.device
-            )
+        
+        if use_instruct:
+            self.END_STR = t.tensor(self.tokenizer.encode(ADD_FROM_POS_CHAT)[1:]).to(self.device)
         else:
-            self.END_STR = t.tensor(self.tokenizer.encode(ADD_FROM_POS_BASE)[1:]).to(
-                self.device
-            )
+            self.END_STR = t.tensor(self.tokenizer.encode(ADD_FROM_POS_BASE)[1:]).to(self.device)
+            
         for i, layer in enumerate(self.model.model.layers):
             self.model.model.layers[i] = BlockOutputWrapper(
                 layer, self.model.lm_head, self.model.model.norm, self.tokenizer
@@ -154,16 +167,22 @@ class LlamaWrapper:
             layer.from_position = pos
 
     def generate(self, tokens, max_new_tokens=100):
-        with t.no_grad():
+        with t.no_grad(): 
+            if tokens.dim() == 1:
+                tokens = tokens.unsqueeze(0) 
+            
             instr_pos = find_instruction_end_postion(tokens[0], self.END_STR)
             self.set_from_positions(instr_pos)
             generated = self.model.generate(
-                inputs=tokens, max_new_tokens=max_new_tokens, top_k=1
+                inputs=tokens, 
+                max_new_tokens=max_new_tokens, 
+                do_sample=False,  ###### deterministic generation
+                pad_token_id=self.tokenizer.eos_token_id  
             )
-            return self.tokenizer.batch_decode(generated)[0]
+            return self.tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
 
     def generate_text(self, user_input: str, model_output: Optional[str] = None, system_prompt: Optional[str] = None, max_new_tokens: int = 50) -> str:
-        if self.use_chat:
+        if self.use_instruct:
             tokens = tokenize_llama_chat(
                 tokenizer=self.tokenizer, user_input=user_input, model_output=model_output, system_prompt=system_prompt
             )
@@ -174,13 +193,20 @@ class LlamaWrapper:
 
     def get_logits(self, tokens):
         with t.no_grad():
-            instr_pos = find_instruction_end_postion(tokens[0], self.END_STR)
+            # Handle both batched and unbatched tokens
+            if tokens.dim() == 1:
+                tokens = tokens.unsqueeze(0)  # Add batch dimension
+            
+            # Extract first sequence for position finding
+            first_sequence = tokens[0] if tokens.size(0) > 0 else tokens
+            instr_pos = find_instruction_end_postion(first_sequence, self.END_STR)
             self.set_from_positions(instr_pos)
             logits = self.model(tokens).logits
             return logits
 
+
     def get_logits_from_text(self, user_input: str, model_output: Optional[str] = None, system_prompt: Optional[str] = None) -> t.Tensor:
-        if self.use_chat:
+        if self.use_instruct:
             tokens = tokenize_llama_chat(
                 tokenizer=self.tokenizer, user_input=user_input, model_output=model_output, system_prompt=system_prompt
             )
@@ -263,8 +289,8 @@ class LlamaWrapper:
         fig.suptitle(f"Layer {layer_number}: Decoded Intermediate Outputs", fontsize=21)
 
         for ax, (mechanism, values) in zip(axes.flatten(), data.items()):
-            tokens, scores = zip(*values)
-            ax.barh(tokens, scores, color="skyblue")
+            tokens_list, scores = zip(*values)  # FIX 9: Rename to avoid confusion with tokens tensor
+            ax.barh(tokens_list, scores, color="skyblue")
             ax.set_title(mechanism)
             ax.set_xlabel("Value")
             ax.set_ylabel("Token")
@@ -277,7 +303,17 @@ class LlamaWrapper:
         plt.show()
 
     def get_activation_data(self, decoded_activations, topk=10):
-        softmaxed = t.nn.functional.softmax(decoded_activations[0][-1], dim=-1)
+        # Handle both 2D and 3D decoded_activations
+        if decoded_activations.dim() == 3:
+            # [batch, seq, vocab] -> take first batch, last token
+            last_token_logits = decoded_activations[0, -1, :]
+        elif decoded_activations.dim() == 2:
+            # [seq, vocab] -> take last token
+            last_token_logits = decoded_activations[-1, :]
+        else:
+            raise ValueError(f"Unexpected decoded_activations shape: {decoded_activations.shape}")
+        
+        softmaxed = t.nn.functional.softmax(last_token_logits, dim=-1)
         values, indices = t.topk(softmaxed, topk)
         probs_percent = [int(v * 100) for v in values.tolist()]
         tokens = self.tokenizer.batch_decode(indices.unsqueeze(-1))
