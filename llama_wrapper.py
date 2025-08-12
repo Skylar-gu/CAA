@@ -76,7 +76,12 @@ class BlockOutputWrapper(t.nn.Module):
                 position_ids=kwargs["position_ids"],
                 from_pos=self.from_position,
             )
-            output = (augmented_output,) + output[1:]
+
+            print(f'output: {output}')
+            print(f"Output shape: {output.shape}")
+
+            output = augmented_output
+
 
         if not self.save_internal_decodings:
             return output

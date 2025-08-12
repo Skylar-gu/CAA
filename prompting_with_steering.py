@@ -96,7 +96,7 @@ def process_item_tqa_mmlu(
 
 
 def test_steering(
-    layers: List[int], multipliers: List[int], settings: SteeringSettings, overwrite=False
+    layers: List[int], multipliers: List[int], settings: SteeringSettings, overwrite=True
 ):
     """
     layers: List of layers to test steering on.
@@ -193,7 +193,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_base_model", action="store_true", default=False)
     parser.add_argument("--model_size", type=str, choices=["7b", "13b"], default="7b")
     parser.add_argument("--override_model_weights_path", type=str, default=None)
-    parser.add_argument("--overwrite", action="store_true", default=False)
+    parser.add_argument("--overwrite", action="store_true", default=True)
     
     args = parser.parse_args()
 
