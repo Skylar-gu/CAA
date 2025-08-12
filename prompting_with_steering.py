@@ -41,7 +41,7 @@ def process_item_ab(
     answer_not_matching_behavior = item["answer_not_matching_behavior"]
     model_output = model.get_logits_from_text(
         user_input=question, model_output="(", system_prompt=system_prompt
-    )
+    ) # get raw, unnormalized scores outputed, which can be converted to probabilities; last position is what should come after the last token
     a_prob, b_prob = get_a_b_probs(model_output, a_token_id, b_token_id)
     return {
         "question": question,

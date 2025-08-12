@@ -75,22 +75,22 @@ class BlockOutputWrapper(t.nn.Module):
             top_token = self.tokenizer.decode(top_token_id)
             dot_product = t.dot(last_token_activations, self.calc_dot_product_with) / (
                 t.norm(last_token_activations) * t.norm(self.calc_dot_product_with)
-            )
+            ) # actually cos sim (normalized)
             self.dot_products.append((top_token, dot_product.cpu().item()))
             
         if self.add_activations is not None: 
             
-            augmented_output = add_vector_from_position(
-                matrix=output[0],  # [batch, seq, hidden]: torch.Size([221, 4096]
-                vector=self.add_activations,
-                position_ids=kwargs["position_ids"],
-                from_pos=self.from_position,
-            )
-
-            if isinstance(output, tuple):
-                output = (augmented_output,) + output[1:]
+            seq_len, hidden_size = output[0].shape
+        
+            if self.from_position is not None:
+                # Add vector at from_position and all subsequent positions
+                for pos in range(self.from_position, seq_len):
+                    output[0][pos, :] += self.add_activations
             else:
-                output = augmented_output
+                # Add to all positions (broadcast)
+                output[0] += self.add_activations.unsqueeze(0).unsqueeze(0)
+                print("Added steering vector to all positions")
+    
 
         if not self.save_internal_decodings:
             return output
@@ -170,12 +170,13 @@ class LlamaWrapper:
         with t.no_grad(): 
             if tokens.dim() == 1:
                 tokens = tokens.unsqueeze(0) 
-            
+            attention_mask = t.ones_like(tokens)
             instr_pos = find_instruction_end_postion(tokens[0], self.END_STR)
             self.set_from_positions(instr_pos)
             generated = self.model.generate(
                 inputs=tokens, 
                 max_new_tokens=max_new_tokens, 
+                attention_mask=attention_mask,
                 do_sample=False,  ###### deterministic generation
                 pad_token_id=self.tokenizer.eos_token_id  
             )

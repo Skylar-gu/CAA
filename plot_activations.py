@@ -34,10 +34,13 @@ def save_activation_projection_pca(behavior: str, layer: int, model_name_path: s
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
+    print(get_activations_path(behavior, layer, model_name_path, "pos"))
+
     # Loading activations
     activations_pos = t.load(
         get_activations_path(behavior, layer, model_name_path, "pos")
     )
+
     activations_neg = t.load(
         get_activations_path(behavior, layer, model_name_path, "neg")
     )
@@ -138,6 +141,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_base_model", action="store_true", default=False)
     args = parser.parse_args()
     model_name_path = get_model_path(args.use_base_model)
+
     args = parser.parse_args()
     for behavior in args.behaviors:
         print(f"plotting {behavior} activations PCA")

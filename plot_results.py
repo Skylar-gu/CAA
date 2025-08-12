@@ -56,13 +56,24 @@ def get_avg_score(results: Dict[str, Any]) -> float:
 
 def get_avg_key_prob(results: Dict[str, Any], key: str) -> float:
     match_key_prob_sum = 0.0
+    print(f"Num examples: {len(results)}")
+    ab_both_zero_count = 0
+
     for result in results:
         matching_value = result[key]
         denom = result["a_prob"] + result["b_prob"]
+
+        if denom == 0:
+            print(f"[WARN] Skipping result with zero probabilities: a_prob={result['a_prob']}, b_prob={result['b_prob']}")
+            print(result)
+
+            continue
+
         if "A" in matching_value:
             match_key_prob_sum += result["a_prob"] / denom
         elif "B" in matching_value:
             match_key_prob_sum += result["b_prob"] / denom
+
     return match_key_prob_sum / len(results)
 
 
